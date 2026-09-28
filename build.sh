@@ -1,0 +1,27 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+app='build/Wi-Fi 固定 IP 与静音切换器.app'
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+swiftc -swift-version 5 -O Sources/Policy.swift Sources/SpeakerAudio.swift Sources/main.swift -o "$app/Contents/MacOS/HomeIP" -framework AppKit -framework CoreWLAN -framework CoreLocation -framework ServiceManagement -framework CoreAudio
+cp Resources/* "$app/Contents/Resources/"
+cat > "$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>HomeIP</string>
+<key>CFBundleIdentifier</key><string>cn.wangshan.home-ip</string>
+<key>CFBundleName</key><string>Wi-Fi IP Mute</string>
+<key>CFBundleDisplayName</key><string>Wi-Fi 固定 IP 与静音切换器</string>
+<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>1.2.0</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>LSUIElement</key><true/>
+<key>NSLocationUsageDescription</key><string>读取当前 Wi-Fi 名称，以便仅在家庭网络使用固定 IP。不采集或保存位置坐标。</string>
+<key>NSLocationWhenInUseUsageDescription</key><string>读取当前 Wi-Fi 名称，以便自动选择家庭 IP 或 DHCP。</string>
+</dict></plist>
+PLIST
+codesign --force --sign - "$app"
+plutil -lint "$app/Contents/Info.plist"
+echo "Built: $PWD/$app"

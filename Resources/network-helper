@@ -1,0 +1,36 @@
+#!/bin/sh
+# Root-owned, fixed operations only. Never source user configuration.
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+LC_ALL=C
+export LC_ALL
+[ "$(id -u)" = 0 ] || exit 77
+[ "$#" = 1 ] || exit 64
+case "$1" in home|dhcp) ;; *) exit 64 ;; esac
+config=/Library/PrivilegedHelperTools/cn.wangshan.home-ip.conf
+valid_ip() {
+  case "$1" in ''|*[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+  oldIFS=$IFS; IFS=.; set -- $1; IFS=$oldIFS
+  [ "$#" = 4 ] || return 1
+  for octet do
+    [ "${#octet}" -le 3 ] || return 1
+    case "$octet" in 0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;; *) return 1 ;; esac
+    [ "$octet" -le 255 ] || return 1
+  done
+  [ "$1" -ge 1 ] && [ "$1" -le 223 ] && [ "$1" -ne 127 ] && [ "$4" -ge 1 ] && [ "$4" -le 254 ]
+}
+case "$1" in
+  home)
+    [ -f "$config" ] && [ ! -L "$config" ] && [ "$(stat -f %u "$config")" = 0 ] || exit 78
+    ip=$(cat "$config") || exit 78
+    valid_ip "$ip" || exit 78
+    info=$(/usr/sbin/networksetup -getinfo 'Wi-Fi') || exit 1
+    current_ip=$(printf '%s\n' "$info" | /usr/bin/sed -n 's/^IP address: //p' | /usr/bin/head -n 1)
+    if [ "$current_ip" != "$ip" ]; then
+      if /sbin/ping -q -c 2 -W 1000 "$ip" >/dev/null 2>&1; then
+        echo '目标 IP 有设备响应，已取消固定地址，请先检查占用。'; exit 73
+      fi
+    fi
+    /usr/sbin/networksetup -setmanualwithdhcprouter 'Wi-Fi' "$ip" ;;
+  dhcp) /usr/sbin/networksetup -setdhcp 'Wi-Fi' ;;
+esac
