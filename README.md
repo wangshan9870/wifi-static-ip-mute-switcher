@@ -2,7 +2,7 @@
 
 Wi-Fi 固定 IP 与静音切换器是一款原生 macOS 菜单栏应用：连接指定的家庭 Wi-Fi 时，为 Mac 的 Wi-Fi 服务设置选定的 IPv4 地址；连接其他可识别的 Wi-Fi 时，恢复自动 DHCP。它还可以在离家时自动静音内置扬声器，回家后恢复声音。
 
-> 目前提供源码构建，尚无经过 Developer ID 公证的安装包。首次使用时，请在设置中填写家庭 Wi-Fi 名称与固定 IPv4 地址。未完成设置前，应用不会自动切换 IP 或控制扬声器。
+> 提供适用于 Apple Silicon 和 Intel Mac 的下载包，但尚未经过 Developer ID 签名与公证。首次使用时，请在设置中填写家庭 Wi-Fi 名称与固定 IPv4 地址。未完成设置前，应用不会自动切换 IP 或控制扬声器。
 
 ## 开发背景
 
@@ -18,7 +18,13 @@ Wi-Fi 固定 IP 与静音切换器是一款原生 macOS 菜单栏应用：连接
 - 可独立开启「离家自动静音内置扬声器」。非家庭网络、断网或无法识别 Wi-Fi 时保持内置扬声器静音；确认回家后取消静音一次，之后尊重手动静音。耳机及外接音频设备不受此功能控制。
 - 支持登录时启动、立即检查、恢复 DHCP 并暂停。
 
-## 系统要求与构建
+## 下载与安装
+
+在 [Releases](https://github.com/wangshan9870/wifi-static-ip-mute-switcher/releases/latest) 下载 macOS ZIP，解压后将应用拖入「应用程序」文件夹，再打开。安装包同时包含 Apple Silicon 和 Intel 架构，要求 macOS 13 或更新版本及带 Wi-Fi 的 Mac。
+
+此下载包使用 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**，因此 macOS 可能阻止首次打开。请确认下载来源为本仓库的 Releases，并通过 macOS「系统设置 → 隐私与安全性」中的提示手动允许打开；不要关闭系统的安全保护。安装网络助手时仍需单独授予管理员权限。
+
+## 从源码构建
 
 - macOS 13 或更新版本，带 Wi-Fi 的 Mac。
 - Xcode 或 Xcode Command Line Tools，提供 `swiftc` 和 macOS SDK。

@@ -3,7 +3,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 app='build/Wi-Fi 固定 IP 与静音切换器.app'
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-swiftc -swift-version 5 -O Sources/Policy.swift Sources/SpeakerAudio.swift Sources/main.swift -o "$app/Contents/MacOS/HomeIP" -framework AppKit -framework CoreWLAN -framework CoreLocation -framework ServiceManagement -framework CoreAudio
+for arch in arm64 x86_64; do
+  swiftc -swift-version 5 -O -target "$arch-apple-macos13.0" \
+    Sources/Policy.swift Sources/SpeakerAudio.swift Sources/main.swift \
+    -o "build/HomeIP-$arch" \
+    -framework AppKit -framework CoreWLAN -framework CoreLocation -framework ServiceManagement -framework CoreAudio
+done
+lipo -create build/HomeIP-arm64 build/HomeIP-x86_64 -output "$app/Contents/MacOS/HomeIP"
+rm build/HomeIP-arm64 build/HomeIP-x86_64
 cp Resources/* "$app/Contents/Resources/"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
