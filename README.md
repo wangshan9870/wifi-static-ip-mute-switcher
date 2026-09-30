@@ -79,3 +79,11 @@ sudo /bin/bash "$HOME/Applications/Wi-Fi 固定 IP 与静音切换器.app/Conten
 ```
 
 如果安装在其他位置，请相应修改路径。脚本会恢复自动 DHCP，并移除网络助手、固定 IP 配置和 sudoers 规则。随后可删除应用。
+
+## 交流与贡献
+
+欢迎通过 [Issues](https://github.com/wangshan9870/wifi-static-ip-mute-switcher/issues) 反馈问题或提出建议，也欢迎大家提交 PR，一起改进不同 Mac 网络配置的兼容性、功能和文档。提交前请运行 `./test.sh` 和 `./build.sh`，并在 PR 中说明改动和验证结果。
+
+也可以扫码加我微信交流，请备注「Wi-Fi 切换器」和来意。
+
+<img src="./assets/wechat-qr.jpg" alt="王帅的微信二维码" width="220">
