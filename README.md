@@ -20,7 +20,7 @@ Wi-Fi 固定 IP 与静音切换器是一款原生 macOS 菜单栏应用：连接
 
 ## 下载与安装
 
-在 [Releases](https://github.com/wangshan9870/wifi-static-ip-mute-switcher/releases/latest) 下载 macOS ZIP，解压后将应用拖入「应用程序」文件夹，再打开。安装包同时包含 Apple Silicon 和 Intel 架构，要求 macOS 13 或更新版本及带 Wi-Fi 的 Mac。
+在 [Releases](https://github.com/wangshan9870/wifi-static-ip-mute-switcher/releases/latest) 下载 macOS DMG，打开后将应用拖到旁边的 Applications 文件夹，再从「应用程序」打开。安装包同时包含 Apple Silicon 和 Intel 架构，要求 macOS 13 或更新版本及带 Wi-Fi 的 Mac。
 
 此下载包使用 ad-hoc 签名，**没有 Developer ID 签名或 Apple 公证**，因此 macOS 可能阻止首次打开。请确认下载来源为本仓库的 Releases，并通过 macOS「系统设置 → 隐私与安全性」中的提示手动允许打开；不要关闭系统的安全保护。安装网络助手时仍需单独授予管理员权限。
 
@@ -35,6 +35,8 @@ Wi-Fi 固定 IP 与静音切换器是一款原生 macOS 菜单栏应用：连接
 ./test.sh
 ./build.sh
 ```
+
+运行 `./package-dmg.sh` 可重新构建并生成 DMG 安装包和 SHA-256 校验文件，产物位于 `build/`。
 
 构建产物为 `build/Wi-Fi 固定 IP 与静音切换器.app`。将它复制到固定位置后再首次打开，例如：
 
