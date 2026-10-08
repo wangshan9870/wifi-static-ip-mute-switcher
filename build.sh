@@ -30,8 +30,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>cn.wangshan.home-ip</string>
 <key>CFBundleName</key><string>Wi-Fi IP Mute</string>
 <key>CFBundleDisplayName</key><string>Wi-Fi 固定 IP 与静音切换器</string>
-<key>CFBundleVersion</key><string>5</string>
-<key>CFBundleShortVersionString</key><string>1.2.1</string>
+<key>CFBundleVersion</key><string>6</string>
+<key>CFBundleShortVersionString</key><string>1.2.2</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>

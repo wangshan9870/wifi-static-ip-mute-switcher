@@ -6,19 +6,21 @@ import ServiceManagement
 let helperPath = "/Library/PrivilegedHelperTools/cn.wangshan.home-ip"
 let helperConfigPath = "/Library/PrivilegedHelperTools/cn.wangshan.home-ip.conf"
 func run(_ path: String, _ arguments: [String]) -> (Int32, String) {
-    let task = Process(), pipe = Pipe()
-    task.executableURL = URL(fileURLWithPath: path); task.arguments = arguments
-    task.standardOutput = pipe; task.standardError = pipe
-    do {
-        try task.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        return (task.terminationStatus, String(data: data, encoding: .utf8) ?? "")
-    } catch { return (-1, error.localizedDescription) }
+    return autoreleasepool {
+        let task = Process(), pipe = Pipe()
+        task.executableURL = URL(fileURLWithPath: path); task.arguments = arguments
+        task.standardOutput = pipe; task.standardError = pipe
+        do {
+            try task.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
+            return (task.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+        } catch { return (-1, error.localizedDescription) }
+    }
 }
 func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDelegate, NSWindowDelegate {
     var item: NSStatusItem!
     var timer: Timer?
     var speakerTimer: Timer?
@@ -31,7 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     var speakerProtection = UserDefaults.standard.object(forKey: "muteSpeakersAway") as? Bool ?? true
     var speakerStatus = "扬声器保护：正在检查…"
     let location = CLLocationManager()
-    let queue = DispatchQueue(label: "home-ip.network")
+    let queue = DispatchQueue(label: "home-ip.network", autoreleaseFrequency: .workItem)
+    private var displayedMenuState: [String] = []
     var policy = NetworkPolicy()
     var busy = false
     var enabled = UserDefaults.standard.bool(forKey: "automatic")
@@ -79,6 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         result.target = self; return result
     }
     func rebuildMenu() {
+        let loginEnabled = SMAppService.mainApp.status == .enabled
+        let state = [currentSSID, currentIP, status, speakerStatus, String(enabled),
+                     String(speakerProtection), String(busy), String(loginEnabled),
+                     String(location.authorizationStatus.rawValue)]
+        guard state != displayedMenuState else { return }
+        displayedMenuState = state
         window?.title = "Wi-Fi 固定 IP 与静音切换器 · \(currentSSID) · \(status)"
         let diagnostic = "authorization=\(location.authorizationStatus.rawValue) enabled=\(enabled) ssidAvailable=\(CWWiFiClient.shared().interface(withName: "en0")?.ssid() != nil) status=\(status) speakerProtection=\(speakerProtection) speakerStatus=\(speakerStatus)"
         try? diagnostic.write(to: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Caches/cn.wangshan.home-ip-status.txt"), atomically: true, encoding: .utf8)
@@ -97,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         menu.addItem(menuItem("恢复 DHCP 并暂停", #selector(restore)))
         menu.addItem(menuItem("立即检查", #selector(checkNow)))
         let login = menuItem("登录时启动", #selector(toggleLogin))
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        login.state = loginEnabled ? .on : .off
         menu.addItem(login)
         menu.addItem(.separator())
         menu.addItem(menuItem("设置与使用说明…", #selector(showSetup)))
@@ -286,6 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 680), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Wi-Fi 固定 IP 与静音切换器 · 设置"; window.isReleasedWhenClosed = false
+        window.delegate = self
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
         stack.translatesAutoresizingMaskIntoConstraints = false
         window.contentView!.addSubview(stack)
@@ -317,6 +327,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         label("3. 在菜单栏开启「自动切换」和「登录时启动」。定位权限仅用于获取 Wi-Fi 名称，不采集或保存坐标。")
         label("固定 IP 应位于家庭路由器的网段，并在路由器地址池中预留或排除。占用检查无法发现所有离线设备。", size: 12)
         self.window = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow, closing === window else { return }
+        ssidField = nil
+        ipField = nil
+        window = nil
     }
 }
 let application = NSApplication.shared
