@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     var config = ""
     var failureUntil = Date.distantPast
     var window: NSWindow?
+    var settingsUI: SettingsUI?
     var wakeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -67,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         if !UserDefaults.standard.bool(forKey: "introduced") { showSetup() }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSetup(); return true }
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) { tick() }
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) { settingsUI?.update(self); tick() }
     var helperInstalled: Bool { FileManager.default.isExecutableFile(atPath: helperPath) }
     var settingsValid: Bool { HomeSettings.validSSID(settings.ssid) && HomeSettings.validIP(settings.ip) }
     var helperConfigured: Bool {
@@ -86,9 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         let state = [currentSSID, currentIP, status, speakerStatus, String(enabled),
                      String(speakerProtection), String(busy), String(loginEnabled),
                      String(location.authorizationStatus.rawValue)]
+        settingsUI?.update(self)
         guard state != displayedMenuState else { return }
         displayedMenuState = state
-        window?.title = "Wi-Fi 固定 IP 与静音切换器 · \(currentSSID) · \(status)"
         let diagnostic = "authorization=\(location.authorizationStatus.rawValue) enabled=\(enabled) ssidAvailable=\(CWWiFiClient.shared().interface(withName: "en0")?.ssid() != nil) status=\(status) speakerProtection=\(speakerProtection) speakerStatus=\(speakerStatus)"
         try? diagnostic.write(to: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Caches/cn.wangshan.home-ip-status.txt"), atomically: true, encoding: .utf8)
         let menu = NSMenu()
@@ -199,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     @objc func toggleAutomatic() {
         if enabled { restore(); return }
         guard settingsValid else { showSetup(); alert("请先完成设置", "填写家庭 Wi-Fi 和固定 IP 后再开启自动切换。"); return }
-        guard helperInstalled else { showSetup(); return }
+        guard helperInstalled else { showSetup(); settingsUI?.selectPage(2); return }
         location.requestWhenInUseAuthorization()
         setEnabled(true); tick()
     }
@@ -230,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
             self.location.requestWhenInUseAuthorization()
         }
     }
+    @objc func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
     @objc func openPrivacy() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices")!) }
     @objc func useCurrentWiFi() {
         guard let ssid = CWWiFiClient.shared().interface(withName: "en0")?.ssid(),
@@ -251,11 +253,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         guard let ssidField, let ipField else { return }
         let candidate = HomeSettings(ssid: ssidField.stringValue, ip: ipField.stringValue)
         guard HomeSettings.validSSID(candidate.ssid) else {
-            alert("Wi-Fi 名称无效", "请输入实际的 Wi-Fi 名称，最长 32 字节，不能包含控制字符。")
+            settingsUI?.showFeedback("请输入实际的 Wi-Fi 名称，最长 32 字节，不能包含控制字符。", error: true)
             return
         }
         guard HomeSettings.validIP(candidate.ip) else {
-            alert("固定 IP 无效", "请输入可用的 IPv4 地址，例如 192.168.50.42。")
+            settingsUI?.showFeedback("请输入可用的 IPv4 地址，例如 192.168.50.42。", error: true)
             return
         }
         guard !busy else { alert("正在处理网络", "请稍后再保存。"); return }
@@ -280,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         speakerPolicy = SpeakerTransitionPolicy()
         failureUntil = .distantPast
         checkSpeakers(); tick()
-        alert("家庭网络设置已保存", "家庭 Wi-Fi：\(candidate.ssid)\n固定 IP：\(candidate.ip)")
+        settingsUI?.showFeedback("家庭网络已保存。")
     }
     @objc func installHelper() {
         guard !busy, let resources = Bundle.main.resourcePath else { return }
@@ -293,46 +295,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     @objc func showSetup() {
         UserDefaults.standard.set(true, forKey: "introduced")
         if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 680), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Wi-Fi 固定 IP 与静音切换器 · 设置"; window.isReleasedWhenClosed = false
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 650), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window.title = "Wi-Fi 固定 IP 与静音切换器"
+        window.appearance = NSAppearance(named: .aqua)
+        window.isReleasedWhenClosed = false
         window.delegate = self
-        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView!.addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 28), stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -28), stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 26)])
-        func label(_ text: String, size: CGFloat = 14) {
-            let field = NSTextField(wrappingLabelWithString: text); field.font = .systemFont(ofSize: size); field.preferredMaxLayoutWidth = 504; stack.addArrangedSubview(field)
-        }
-        func button(_ title: String, _ action: Selector) { let button = NSButton(title: title, target: self, action: action); button.bezelStyle = .rounded; stack.addArrangedSubview(button) }
-        label("回家固定 IP，出门自动获取", size: 23)
-        label("家庭 Wi-Fi 使用指定的固定 IP；其他 Wi-Fi 使用自动 DHCP。\n连续两次识别同一网络后切换，间隔 5 秒。")
-        func settingField(_ title: String, value: String) -> NSTextField {
-            let row = NSStackView(); row.orientation = .horizontal; row.spacing = 12
-            let name = NSTextField(labelWithString: title); name.setContentHuggingPriority(.required, for: .horizontal)
-            let field = NSTextField(string: value); field.frame.size.width = 320
-            row.addArrangedSubview(name); row.addArrangedSubview(field); stack.addArrangedSubview(row)
-            field.widthAnchor.constraint(equalToConstant: 320).isActive = true
-            return field
-        }
-        ssidField = settingField("家庭 Wi-Fi", value: settings.ssid)
-        button("使用当前 Wi-Fi", #selector(useCurrentWiFi))
-        ipField = settingField("固定 IP", value: settings.ip)
-        button("保存家庭网络设置", #selector(saveSettings))
-        label("修改固定 IP 需要 macOS 管理员授权；Wi-Fi 名称可以直接保存。")
-        label("离家自动静音内置扬声器：默认开启，每秒检查。断网或无法识别 Wi-Fi 时也静音；耳机和外接音频不受影响。连续两次确认家庭 Wi-Fi 后自动取消静音，之后可手动静音；关闭保护或退出时不改变声音。此开关独立于 IP 自动切换。")
-        label("首次安装需要管理员授权。网络助手仅允许本用户执行上述两种固定操作，不保存密码。")
-        button("1. 安装网络助手…", #selector(installHelper))
-        button("2. 允许识别 Wi-Fi…", #selector(authorizeLocation))
-        button("打开系统定位权限设置", #selector(openPrivacy))
-        label("3. 在菜单栏开启「自动切换」和「登录时启动」。定位权限仅用于获取 Wi-Fi 名称，不采集或保存坐标。")
-        label("固定 IP 应位于家庭路由器的网段，并在路由器地址池中预留或排除。占用检查无法发现所有离线设备。", size: 12)
-        self.window = window; window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        let ui = SettingsUI(app: self)
+        window.contentView = ui
+        settingsUI = ui
+        ssidField = ui.ssidField
+        ipField = ui.ipField
+        self.window = window
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
+
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow, closing === window else { return }
         ssidField = nil
         ipField = nil
         window = nil
+        settingsUI = nil
     }
 }
 let application = NSApplication.shared
