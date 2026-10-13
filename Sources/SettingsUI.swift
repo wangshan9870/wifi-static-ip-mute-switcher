@@ -22,13 +22,54 @@ private class Surface: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
+private final class SidebarButton: NSButton {
+    private let glyph = NSImageView(frame: NSRect(x: 14, y: 11, width: 18, height: 18))
+    private let caption: NSTextField
+
+    init(title: String, symbol: String, frame: NSRect, target: AnyObject, action: Selector) {
+        caption = NSTextField(labelWithString: title)
+        super.init(frame: frame)
+        self.title = ""
+        self.target = target
+        self.action = action
+        isBordered = false
+        (cell as? NSButtonCell)?.highlightsBy = []
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        glyph.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
+        glyph.image?.isTemplate = true
+        glyph.imageScaling = .scaleProportionallyUpOrDown
+        caption.frame = NSRect(x: 44, y: 10, width: 125, height: 20)
+        caption.font = .systemFont(ofSize: 13, weight: .medium)
+        glyph.setAccessibilityElement(false)
+        caption.setAccessibilityElement(false)
+        setAccessibilityLabel(title)
+        addSubview(glyph)
+        addSubview(caption)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // The label and image are presentation only; the whole row remains a button.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+    func setSelected(_ selected: Bool) {
+        let color = selected ? UIStyle.accent : UIStyle.muted
+        layer?.backgroundColor = (selected ? NSColor.white : .clear).cgColor
+        glyph.contentTintColor = color
+        caption.textColor = color
+        setAccessibilityValue(selected ? "已选择" : "")
+    }
+}
+
 // Created only while the settings window is open. All actions use the same
 // handlers as the menu bar; this view owns no polling or network operations.
 final class SettingsUI: NSView {
     override var isFlipped: Bool { true }
     private weak var app: AppDelegate?
     private var pages: [NSView] = []
-    private var navigation: [NSButton] = []
+    private var navigation: [SidebarButton] = []
     let ssidField = NSTextField(string: "")
     let ipField = NSTextField(string: "")
     private let modeTitle = NSTextField(labelWithString: "")
@@ -132,13 +173,10 @@ final class SettingsUI: NSView {
         text("回家，安心外放", in: side, NSRect(x: 76, y: 29, width: 126, height: 24), size: 14, weight: .semibold)
         text("Wi-Fi 与声音自动切换", in: side, NSRect(x: 76, y: 57, width: 122, height: 32), size: 10, color: UIStyle.muted)
         for (index, entry) in [("当前状态", "wifi"), ("家庭网络", "slider.horizontal.3"), ("权限与启动", "checkmark.shield")].enumerated() {
-            let nav = NSButton(title: "  " + entry.0, target: self, action: #selector(navigate(_:)))
-            nav.tag = index; nav.frame = NSRect(x: 16, y: 114 + index * 49, width: 178, height: 40)
-            nav.isBordered = false; nav.alignment = .left; nav.imagePosition = .imageLeading
-            nav.image = NSImage(systemSymbolName: entry.1, accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
-            nav.font = .systemFont(ofSize: 13, weight: .medium)
-            nav.wantsLayer = true; nav.layer?.cornerRadius = 7
+            let nav = SidebarButton(title: entry.0, symbol: entry.1,
+                frame: NSRect(x: 16, y: 114 + index * 49, width: 178, height: 40),
+                target: self, action: #selector(navigate(_:)))
+            nav.tag = index
             side.addSubview(nav); navigation.append(nav)
         }
         text("● 菜单栏后台运行", in: side, NSRect(x: 26, y: 550, width: 172, height: 22), size: 11, color: UIStyle.accent)
@@ -148,9 +186,7 @@ final class SettingsUI: NSView {
     func selectPage(_ index: Int) {
         for (i, page) in pages.enumerated() { page.isHidden = i != index }
         for (i, nav) in navigation.enumerated() {
-            nav.layer?.backgroundColor = (i == index ? NSColor.white : .clear).cgColor
-            nav.contentTintColor = i == index ? UIStyle.accent : UIStyle.muted
-            nav.setAccessibilityValue(i == index ? "已选择" : "")
+            nav.setSelected(i == index)
         }
         window?.makeFirstResponder(navigation[index])
     }
