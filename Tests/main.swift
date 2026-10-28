@@ -71,5 +71,6 @@ expect(WiFiSSIDParser.parseNetworksetup("Current Wi-Fi Network: My Home") == "My
 expect(WiFiSSIDParser.parseNetworksetup("Current Wi-Fi Network: Home:5G") == "Home:5G", "SSID may contain colon")
 expect(WiFiSSIDParser.parseNetworksetup("Current Wi-Fi Network:  Home") == " Home", "SSID leading spaces are preserved")
 expect(WiFiSSIDParser.parseNetworksetup("当前 Wi-Fi 网络：家庭网络") == "家庭网络", "parse localized networksetup SSID")
+expect(WiFiSSIDParser.parseNetworksetup("SSID : Home from ipconfig") == "Home from ipconfig", "parse ipconfig SSID")
 expect(WiFiSSIDParser.parseNetworksetup("You are not associated with an AirPort network.") == nil, "unassociated network is unknown")
-print("Wi-Fi reader tests passed (5 checks)")
+print("Wi-Fi reader tests passed (6 checks)")

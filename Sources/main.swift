@@ -56,13 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
             ssidReadWithoutLocation = false
             return ssid
         }
-        let result = run("/usr/sbin/networksetup", ["-getairportnetwork", "en0"])
-        guard result.0 == 0, let ssid = WiFiSSIDParser.parseNetworksetup(result.1) else {
-            ssidReadWithoutLocation = false
-            return nil
+        for (path, arguments) in [("/usr/sbin/networksetup", ["-getairportnetwork", "en0"]),
+                                   ("/usr/sbin/ipconfig", ["getsummary", "en0"])] {
+            let result = run(path, arguments)
+            if result.0 == 0, let ssid = WiFiSSIDParser.parseNetworksetup(result.1) {
+                ssidReadWithoutLocation = true
+                return ssid
+            }
         }
-        ssidReadWithoutLocation = true
-        return ssid
+        ssidReadWithoutLocation = false
+        return nil
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
