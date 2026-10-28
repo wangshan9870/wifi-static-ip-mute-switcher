@@ -66,3 +66,10 @@ expect(customSound.desiredMute(ssid: "My Home", homeSSID: "My Home", enabled: tr
 expect(customSound.desiredMute(ssid: "My Home", homeSSID: "My Home", enabled: true) == false, "custom home restores sound")
 expect(SpeakerPolicy.shouldMute(ssid: "Other", homeSSID: "My Home", enabled: true), "custom home excludes other SSID")
 print("Custom settings tests passed")
+
+expect(WiFiSSIDParser.parseNetworksetup("Current Wi-Fi Network: My Home") == "My Home", "parse networksetup SSID")
+expect(WiFiSSIDParser.parseNetworksetup("Current Wi-Fi Network: Home:5G") == "Home:5G", "SSID may contain colon")
+expect(WiFiSSIDParser.parseNetworksetup("Current Wi-Fi Network:  Home") == " Home", "SSID leading spaces are preserved")
+expect(WiFiSSIDParser.parseNetworksetup("当前 Wi-Fi 网络：家庭网络") == "家庭网络", "parse localized networksetup SSID")
+expect(WiFiSSIDParser.parseNetworksetup("You are not associated with an AirPort network.") == nil, "unassociated network is unknown")
+print("Wi-Fi reader tests passed (5 checks)")

@@ -40,12 +40,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     var enabled = UserDefaults.standard.bool(forKey: "automatic")
     var status = "正在读取网络…"
     var currentSSID = "未知"
+    var detectedSSID: String?
+    var ssidReadWithoutLocation = false
     var currentIP = "—"
     var config = ""
     var failureUntil = Date.distantPast
     var window: NSWindow?
     var settingsUI: SettingsUI?
     var wakeObserver: NSObjectProtocol?
+
+    // CoreWLAN is preferred when available. The system networksetup command
+    // is the fallback for Macs where Location Services is disabled.
+    func readCurrentSSID() -> String? {
+        if let ssid = CWWiFiClient.shared().interface(withName: "en0")?.ssid(), !ssid.isEmpty {
+            ssidReadWithoutLocation = false
+            return ssid
+        }
+        let result = run("/usr/sbin/networksetup", ["-getairportnetwork", "en0"])
+        guard result.0 == 0, let ssid = WiFiSSIDParser.parseNetworksetup(result.1) else {
+            ssidReadWithoutLocation = false
+            return nil
+        }
+        ssidReadWithoutLocation = true
+        return ssid
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Prevent multiple timers changing the same network service.
@@ -90,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         settingsUI?.update(self)
         guard state != displayedMenuState else { return }
         displayedMenuState = state
-        let diagnostic = "authorization=\(location.authorizationStatus.rawValue) enabled=\(enabled) ssidAvailable=\(CWWiFiClient.shared().interface(withName: "en0")?.ssid() != nil) status=\(status) speakerProtection=\(speakerProtection) speakerStatus=\(speakerStatus)"
+        let diagnostic = "authorization=\(location.authorizationStatus.rawValue) enabled=\(enabled) ssidAvailable=\(detectedSSID != nil) ssidReader=\(ssidReadWithoutLocation ? "networksetup" : "corewlan-or-none") status=\(status) speakerProtection=\(speakerProtection) speakerStatus=\(speakerStatus)"
         try? diagnostic.write(to: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Caches/cn.wangshan.home-ip-status.txt"), atomically: true, encoding: .utf8)
         let menu = NSMenu()
         menu.addItem(menuItem("Wi-Fi：\(currentSSID)"))
@@ -128,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
             }
             return
         }
-        let ssid = CWWiFiClient.shared().interface(withName: "en0")?.ssid()
+        let ssid = detectedSSID
         let desired = speakerPolicy.desiredMute(ssid: ssid, homeSSID: settings.ssid, enabled: speakerProtection)
         let next: String
         if !speakerProtection { next = "扬声器保护：已关闭" }
@@ -146,7 +164,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         guard settingsValid else {
             status = "请先设置家庭 Wi-Fi 和固定 IP"; rebuildMenu(); return
         }
-        let ssid = CWWiFiClient.shared().interface(withName: "en0")?.ssid()
+        let ssid = readCurrentSSID()
+        detectedSSID = ssid
         currentSSID = ssid ?? "未连接或尚未允许识别"
         let desired = policy.observe(ssid: ssid, homeSSID: settings.ssid, enabled: enabled)
         busy = true
@@ -162,9 +181,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
                 else if Date() < self.failureUntil { /* preserve error during backoff */ }
                 else if let desired {
                     if self.matches(desired) { self.status = desired == .home ? "家庭模式 · DHCP 手动地址" : "外出模式 · 自动 DHCP" }
-                    else if CWWiFiClient.shared().interface(withName: "en0")?.ssid() == ssid { self.apply(desired); return }
+                    else if self.readCurrentSSID() == ssid { self.apply(desired); return }
                     else { self.policy = NetworkPolicy(); self.status = "Wi-Fi 已变化，等待重新确认" }
                 } else { self.status = "正在确认 Wi-Fi，稍后自动切换…" }
+                self.checkSpeakers()
                 self.rebuildMenu()
             }
         }
@@ -201,7 +221,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         if enabled { restore(); return }
         guard settingsValid else { showSetup(); alert("请先完成设置", "填写家庭 Wi-Fi 和固定 IP 后再开启自动切换。"); return }
         guard helperInstalled else { showSetup(); settingsUI?.selectPage(2); return }
-        location.requestWhenInUseAuthorization()
         setEnabled(true); tick()
     }
     @objc func restore() {
@@ -225,6 +244,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         let alert = NSAlert(); alert.messageText = title; alert.informativeText = detail; alert.runModal()
     }
     @objc func authorizeLocation() {
+        // Retry the system network reader first. Location permission remains a
+        // compatibility fallback for older/macOS configurations only.
+        let ssid = readCurrentSSID()
+        detectedSSID = ssid
+        currentSSID = ssid ?? "未连接或尚未允许识别"
+        if ssid != nil {
+            checkSpeakers(); tick(); return
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -234,9 +261,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     @objc func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
     @objc func openPrivacy() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices")!) }
     @objc func useCurrentWiFi() {
-        guard let ssid = CWWiFiClient.shared().interface(withName: "en0")?.ssid(),
+        guard let ssid = readCurrentSSID(),
               HomeSettings.validSSID(ssid) else {
-            alert("暂时无法识别当前 Wi-Fi", "请确认已连接 Wi-Fi，并在 macOS 定位服务中允许「Wi-Fi 固定 IP 与静音切换器」读取网络名称。授权后再点一次「使用当前 Wi-Fi」。")
+            alert("暂时无法识别当前 Wi-Fi", "请确认已连接 Wi-Fi。应用会优先通过系统网络信息读取名称；如果仍不可用，再在 macOS 定位服务中允许本应用读取网络名称。")
             return
         }
         ssidField?.stringValue = ssid

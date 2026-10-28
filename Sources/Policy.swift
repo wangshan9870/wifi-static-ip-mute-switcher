@@ -28,6 +28,30 @@ struct HomeSettings: Equatable {
     }
 }
 
+enum WiFiSSIDParser {
+    // `networksetup -getairportnetwork` can report the associated Wi-Fi name
+    // without CoreWLAN's Location Services authorization. Keep parsing pure so
+    // localized labels and SSIDs containing a colon are covered by tests.
+    static func parseNetworksetup(_ output: String) -> String? {
+        for rawLine in output.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .newlines)
+            let normalized = line.trimmingCharacters(in: .whitespaces)
+            guard !normalized.isEmpty,
+                  !normalized.localizedCaseInsensitiveContains("not associated") else { continue }
+            guard let normalizedSeparator = normalized.firstIndex(where: { $0 == ":" || $0 == "：" }),
+                  let separator = line.firstIndex(where: { $0 == ":" || $0 == "：" }) else { continue }
+            let label = normalized[..<normalizedSeparator]
+            guard label.localizedCaseInsensitiveContains("network") || label.contains("网络") else { continue }
+            var value = String(line[line.index(after: separator)...])
+            // The command adds one separator space after the colon. Remove
+            // that formatting byte only, preserving intentional SSID spaces.
+            if value.first == " " { value.removeFirst() }
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+}
+
 struct NetworkPolicy {
     private var candidate: String?
     private var count = 0

@@ -247,7 +247,7 @@ final class SettingsUI: NSView {
         heading("权限与启动", subtitle: "完成一次设置，之后在菜单栏自动工作。", in: page)
         let group = Surface(NSRect(x: 36, y: 117, width: 618, height: 309), color: .white, radius: 10, border: true)
         page.addSubview(group)
-        for (index, entry) in [("wifi", "识别 Wi-Fi 名称", "需要定位权限，仅用于读取当前网络名。"), ("checkmark.shield", "网络助手", "经管理员授权后，才能切换固定 IP 与 DHCP。")].enumerated() {
+        for (index, entry) in [("wifi", "识别 Wi-Fi 名称", "优先使用系统网络信息；定位服务关闭时也可尝试读取当前网络名。"), ("checkmark.shield", "网络助手", "经管理员授权后，才能切换固定 IP 与 DHCP。")].enumerated() {
             let y = CGFloat(index * 106)
             _ = symbol(entry.0, in: group, NSRect(x: 20, y: y + 28, width: 32, height: 32))
             text(entry.1, in: group, NSRect(x: 68, y: y + 17, width: 378, height: 23), weight: .medium)
@@ -294,9 +294,9 @@ final class SettingsUI: NSView {
         automatic.isEnabled = !app.busy
         for button in operationButtons { button.isEnabled = !app.busy }
         let authorized = app.location.authorizationStatus == .authorizedAlways
-        locationState.stringValue = !CLLocationManager.locationServicesEnabled() ? "系统定位服务已关闭" : authorized ? "已允许识别网络名称" : app.location.authorizationStatus == .denied || app.location.authorizationStatus == .restricted ? "未允许，请在系统定位权限中开启" : "尚未授权"
-        locationButton.title = authorized ? "已允许" : "允许识别"
-        locationButton.isEnabled = !authorized
+        locationState.stringValue = app.ssidReadWithoutLocation ? "已通过系统网络信息识别（无需定位权限）" : authorized ? "已允许识别网络名称" : !CLLocationManager.locationServicesEnabled() ? "定位服务已关闭，将优先使用系统网络信息" : app.location.authorizationStatus == .denied || app.location.authorizationStatus == .restricted ? "未允许，将优先使用系统网络信息" : "尚未授权，将优先使用系统网络信息"
+        locationButton.title = (app.detectedSSID != nil || authorized) ? "已识别" : "检查识别"
+        locationButton.isEnabled = app.detectedSSID == nil && !app.busy
         let configured = app.helperInstalled && app.helperConfigured
         helperState.stringValue = configured ? "已安装，家庭地址已同步" : app.helperInstalled ? "家庭地址待同步，请重新安装助手" : "尚未安装网络助手"
         helperButton.title = configured ? "已安装" : "安装助手"
