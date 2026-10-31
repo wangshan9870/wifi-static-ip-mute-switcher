@@ -49,6 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var speakerRetryTimer: Timer?
     private var safetyTimer: Timer?
     private var readRetries = 0
+    var updateState = UpdateState.idle
+    private var updateTimer: Timer?
+    private let updateInterval: TimeInterval = 24 * 3600
+    var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版" }
     // Two reads this far apart confirm a network before acting on it.
     private let confirmDelay: TimeInterval = 2
 
@@ -84,6 +88,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.policy = NetworkPolicy(); self?.speakerMonitor?.start(); self?.evaluate()
         }
         evaluate()
+        // Update check: shortly after launch, then at most once a day. The
+        // hourly timer only compares a date; it makes no request by itself.
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkForUpdatesIfDue() }
+        updateTimer?.tolerance = 600
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.checkForUpdatesIfDue() }
         if !UserDefaults.standard.bool(forKey: "introduced") { showSetup() }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSetup(); return true }
@@ -103,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func rebuildMenu() {
         let loginEnabled = SMAppService.mainApp.status == .enabled
         let state = [networkDescription, currentIP, status, speakerStatus, String(enabled),
-                     String(speakerProtection), String(busy), String(loginEnabled)]
+                     String(speakerProtection), String(busy), String(loginEnabled), String(describing: updateState)]
         settingsUI?.update(self)
         guard state != displayedMenuState else { return }
         displayedMenuState = state
@@ -112,6 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let diagnostic = "enabled=\(enabled) networkKnown=\(known) atHome=\(atHome) status=\(status) speakerProtection=\(speakerProtection) speakerStatus=\(speakerStatus)"
         try? diagnostic.write(to: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Caches/cn.wangshan.home-ip-status.txt"), atomically: true, encoding: .utf8)
         let menu = NSMenu()
+        if case let .available(release) = updateState {
+            menu.addItem(menuItem("发现新版本 v\(release.version)，前往下载…", #selector(openUpdatePage)))
+            menu.addItem(.separator())
+        }
         menu.addItem(menuItem("网络：\(networkDescription)"))
         menu.addItem(menuItem("当前 IP：\(currentIP)"))
         menu.addItem(menuItem(status))
@@ -130,9 +143,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(login)
         menu.addItem(.separator())
         menu.addItem(menuItem("设置与使用说明…", #selector(showSetup)))
+        menu.addItem(menuItem("检查更新…", #selector(checkForUpdates)))
         menu.addItem(menuItem("退出（恢复 DHCP）", #selector(quitSafely)))
         item.menu = menu
         item.button?.title = enabled ? "" : " 暂停"
+    }
+    func checkForUpdatesIfDue() {
+        let last = UserDefaults.standard.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
+        guard Date().timeIntervalSince(last) >= updateInterval else { return }
+        fetchUpdate(manual: false)
+    }
+    @objc func checkForUpdates() { fetchUpdate(manual: true) }
+    private func fetchUpdate(manual: Bool) {
+        guard updateState != .checking else { return }
+        let previous = updateState
+        updateState = .checking; rebuildMenu()
+        UpdateChecker.fetchLatest { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case let .success(release):
+                UserDefaults.standard.set(Date(), forKey: "lastUpdateCheck")
+                self.updateState = AppVersion.isNewer(release.version, than: self.currentVersion) ? .available(release) : .upToDate
+            case let .failure(error):
+                // A silent background failure keeps the last known result.
+                self.updateState = manual ? .failed(error.localizedDescription) : previous
+            }
+            self.rebuildMenu()
+            self.relieveMemory()
+            guard manual else { return }
+            if case let .available(release) = self.updateState {
+                self.offerUpdate(release)
+            } else if case let .failed(message) = self.updateState, self.window == nil {
+                self.alert("检查更新失败", message)
+            } else if self.updateState == .upToDate, self.window == nil {
+                self.alert("已是最新版本", "当前版本 \(self.currentVersion)。")
+            }
+        }
+    }
+    private func offerUpdate(_ release: ReleaseInfo) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "发现新版本 v\(release.version)"
+        alert.informativeText = "当前版本 \(currentVersion)。前往 GitHub 下载 DMG，退出本应用后替换安装即可，设置会保留。"
+        alert.addButton(withTitle: "前往下载")
+        alert.addButton(withTitle: "稍后")
+        if alert.runModal() == .alertFirstButtonReturn { openUpdatePage() }
+    }
+    @objc func openUpdatePage() {
+        let page: String
+        if case let .available(release) = updateState { page = release.page } else { page = ReleaseInfo.releasesPage + "/latest" }
+        if let url = URL(string: page) { NSWorkspace.shared.open(url) }
+    }
+    /// Returns freed malloc pages to the system after transient work (closing
+    /// the settings window, a network request) so the idle footprint drops.
+    func relieveMemory() {
+        // Delay so autoreleased views from the closing window are gone first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = malloc_zone_pressure_relief(nil, 0) }
     }
     @objc func checkNow() { failureUntil = .distantPast; evaluate() }
     @objc func toggleSpeakerProtection() {
@@ -391,6 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ipField = nil
         window = nil
         settingsUI = nil
+        relieveMemory()
     }
 }
 let application = NSApplication.shared

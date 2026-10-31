@@ -1,5 +1,14 @@
 import AppKit
 
+func footprintMB() -> Double {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+    }
+    return result == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : 0
+}
+
 func labels(_ view: NSView) -> [String] {
     (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
 }
@@ -31,6 +40,16 @@ autoreleasepool {
     app.observation = .disconnected
     ui.update(app)
     precondition(labels(ui).contains("未连接 Wi-Fi"))
+    precondition(labels(ui).contains("当前版本 开发版"))
+    app.updateState = .available(ReleaseInfo(version: "9.0.0", page: ReleaseInfo.releasesPage + "/latest"))
+    ui.update(app)
+    precondition(labels(ui).contains("发现新版本，下载后替换安装"))
+    app.updateState = .failed("网络不可用")
+    ui.update(app)
+    precondition(labels(ui).contains("检查失败：网络不可用"))
+    app.updateState = .upToDate
+    ui.update(app)
+    precondition(labels(ui).contains("已是最新版本"))
     app.settings = HomeSettings(router: "", ip: "")
     ui.update(app)
     precondition(labels(ui).contains("先设置你的家庭网络"))
@@ -45,4 +64,9 @@ autoreleasepool {
     precondition(app.window == nil && app.settingsUI == nil && app.routerField == nil && app.ipField == nil)
 }
 precondition(releasedUI == nil)
-print("UI checks passed: home/away/unresolved/disconnected/setup states, unsaved edits, closed-window release")
+// Closing the window hands freed pages back; the idle app must stay small.
+_ = malloc_zone_pressure_relief(nil, 0)
+let afterClose = footprintMB()
+precondition(afterClose < 50, "footprint after closing window: \(afterClose) MB")
+print(String(format: "Footprint after closing settings window: %.1f MB", afterClose))
+print("UI checks passed: home/away/unresolved/disconnected/setup states, update states, unsaved edits, closed-window release")

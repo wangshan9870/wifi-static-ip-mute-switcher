@@ -147,3 +147,45 @@ struct SpeakerTransitionPolicy {
 
     mutating func didRestoreHome() { homeRestored = true }
 }
+
+enum AppVersion {
+    /// Numeric components of `v1.4.0` / `1.4`; nil for anything else.
+    static func components(_ value: String) -> [Int]? {
+        var text = value.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("v") || text.hasPrefix("V") { text.removeFirst() }
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard (1...4).contains(parts.count) else { return nil }
+        let numbers = parts.compactMap { part -> Int? in
+            guard !part.isEmpty, part.count <= 6, part.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            return Int(part)
+        }
+        return numbers.count == parts.count ? numbers : nil
+    }
+
+    static func isNewer(_ candidate: String, than current: String) -> Bool {
+        guard let a = components(candidate), let b = components(current) else { return false }
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+}
+
+/// Parsed GitHub "latest release". Only release pages of this repository are
+/// accepted as download links, so a malformed response cannot open other URLs.
+struct ReleaseInfo: Equatable {
+    static let repository = "wangshan9870/wifi-static-ip-mute-switcher"
+    static let releasesPage = "https://github.com/\(repository)/releases"
+    let version: String
+    let page: String
+
+    static func parse(_ data: Data) -> ReleaseInfo? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["draft"] as? Bool != true, json["prerelease"] as? Bool != true,
+              let tag = json["tag_name"] as? String, AppVersion.components(tag) != nil else { return nil }
+        let page = json["html_url"] as? String ?? ""
+        let safePage = page.hasPrefix(releasesPage + "/tag/") ? page : releasesPage + "/latest"
+        return ReleaseInfo(version: tag.hasPrefix("v") ? String(tag.dropFirst()) : tag, page: safePage)
+    }
+}

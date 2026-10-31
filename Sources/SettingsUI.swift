@@ -91,13 +91,16 @@ final class SettingsUI: NSView {
     private var operationButtons: [NSButton] = []
     private var checkButton: NSButton!
     private var helperButton: NSButton!
+    private let versionLabel = NSTextField(labelWithString: "")
+    private let updateLabel = NSTextField(wrappingLabelWithString: "")
+    private var updateButton: NSButton!
 
     init(app: AppDelegate) {
         self.app = app
         super.init(frame: NSRect(x: 0, y: 0, width: 900, height: 650))
         wantsLayer = true
         layer?.backgroundColor = UIStyle.paper.cgColor
-        buildSidebar()
+        buildSidebar(app)
         for _ in 0..<3 {
             let page = Surface(NSRect(x: 210, y: 0, width: 690, height: 650), color: UIStyle.paper)
             addSubview(page); pages.append(page)
@@ -161,7 +164,7 @@ final class SettingsUI: NSView {
         control.setAccessibilityLabel(title)
         view.addSubview(control)
     }
-    private func buildSidebar() {
+    private func buildSidebar(_ app: AppDelegate) {
         let side = Surface(NSRect(x: 0, y: 0, width: 210, height: 650),
                            color: NSColor(calibratedRed: 0.92, green: 0.94, blue: 0.95, alpha: 1))
         addSubview(side)
@@ -178,6 +181,11 @@ final class SettingsUI: NSView {
             nav.tag = index
             side.addSubview(nav); navigation.append(nav)
         }
+        dynamic(versionLabel, in: side, NSRect(x: 26, y: 440, width: 172, height: 18), size: 11, color: UIStyle.muted)
+        updateButton = button("检查更新", in: side, NSRect(x: 20, y: 462, width: 172, height: 32), target: app, action: #selector(AppDelegate.checkForUpdates))
+        updateButton.setAccessibilityLabel("检查更新")
+        dynamic(updateLabel, in: side, NSRect(x: 26, y: 500, width: 172, height: 34), size: 11, color: UIStyle.muted)
+        updateLabel.maximumNumberOfLines = 2; updateLabel.lineBreakMode = .byWordWrapping
         text("● 菜单栏后台运行", in: side, NSRect(x: 26, y: 550, width: 172, height: 22), size: 11, color: UIStyle.accent)
         text("关闭窗口后仍会自动检查\n从菜单栏随时打开", in: side, NSRect(x: 26, y: 577, width: 169, height: 45), size: 11, color: UIStyle.muted)
     }
@@ -302,6 +310,20 @@ final class SettingsUI: NSView {
         helperState.stringValue = configured ? "已安装，家庭地址已同步" : app.helperInstalled ? "家庭地址待同步，请重新安装助手" : "尚未安装网络助手"
         helperButton.title = configured ? "已安装" : "安装助手"
         helperButton.isEnabled = !app.busy && !configured
+        versionLabel.stringValue = "当前版本 \(app.currentVersion)"
+        updateButton.action = #selector(AppDelegate.checkForUpdates)
+        updateButton.isEnabled = app.updateState != .checking
+        updateLabel.textColor = UIStyle.muted
+        switch app.updateState {
+        case .idle: updateButton.title = "检查更新"; updateLabel.stringValue = "每天自动检查一次 GitHub 新版本"
+        case .checking: updateButton.title = "正在检查…"; updateLabel.stringValue = "正在连接 GitHub…"
+        case .upToDate: updateButton.title = "检查更新"; updateLabel.stringValue = "已是最新版本"
+        case let .available(release):
+            updateButton.title = "下载 v\(release.version)"; updateButton.action = #selector(AppDelegate.openUpdatePage)
+            updateLabel.stringValue = "发现新版本，下载后替换安装"; updateLabel.textColor = UIStyle.accent
+        case let .failed(message):
+            updateButton.title = "重新检查"; updateLabel.stringValue = "检查失败：\(message)"; updateLabel.textColor = .systemRed
+        }
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         loginState.stringValue = SMAppService.mainApp.status == .requiresApproval ? "请在系统登录项中允许此应用后台运行。" : SMAppService.mainApp.status == .enabled ? "已开启，登录 Mac 后会在菜单栏运行。" : "已关闭，需要时请手动打开应用。"
     }
