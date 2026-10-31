@@ -1,6 +1,4 @@
 import AppKit
-import CoreWLAN
-import CoreLocation
 import ServiceManagement
 
 let helperPath = "/Library/PrivilegedHelperTools/cn.wangshan.home-ip"
@@ -20,78 +18,77 @@ func run(_ path: String, _ arguments: [String]) -> (Int32, String) {
 }
 func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var item: NSStatusItem!
-    var timer: Timer?
-    var speakerTimer: Timer?
     var speakerPolicy = SpeakerTransitionPolicy()
     var settings = HomeSettings(
-        ssid: UserDefaults.standard.string(forKey: "homeSSID") ?? HomeSettings.defaultSSID,
+        router: UserDefaults.standard.string(forKey: "homeRouter") ?? HomeSettings.defaultRouter,
         ip: UserDefaults.standard.string(forKey: "homeIP") ?? HomeSettings.defaultIP)
-    var ssidField: NSTextField?
+    var routerField: NSTextField?
     var ipField: NSTextField?
     var speakerProtection = UserDefaults.standard.object(forKey: "muteSpeakersAway") as? Bool ?? true
     var speakerStatus = "扬声器保护：正在检查…"
-    let location = CLLocationManager()
     let queue = DispatchQueue(label: "home-ip.network", autoreleaseFrequency: .workItem)
     private var displayedMenuState: [String] = []
     var policy = NetworkPolicy()
     var busy = false
     var enabled = UserDefaults.standard.bool(forKey: "automatic")
     var status = "正在读取网络…"
-    var currentSSID = "未知"
-    var detectedSSID: String?
-    var ssidReadWithoutLocation = false
+    var observation: GatewayObservation?
     var currentIP = "—"
     var config = ""
     var failureUntil = Date.distantPast
     var window: NSWindow?
     var settingsUI: SettingsUI?
     var wakeObserver: NSObjectProtocol?
+    private var networkMonitor: NetworkChangeMonitor?
+    private var speakerMonitor: SpeakerChangeMonitor?
+    private var evaluating = false
+    private var evaluateAgain = false
+    private var evaluationTimer: Timer?
+    private var speakerRetryTimer: Timer?
+    private var safetyTimer: Timer?
+    private var readRetries = 0
+    // Two reads this far apart confirm a network before acting on it.
+    private let confirmDelay: TimeInterval = 2
 
-    // CoreWLAN is preferred when available. The system networksetup command
-    // is the fallback for Macs where Location Services is disabled.
-    func readCurrentSSID() -> String? {
-        if let ssid = CWWiFiClient.shared().interface(withName: "en0")?.ssid(), !ssid.isEmpty {
-            ssidReadWithoutLocation = false
-            return ssid
+    var atHome: Bool { settingsValid && observation?.mac == settings.router }
+    var networkDescription: String {
+        switch observation {
+        case nil: return "正在读取…"
+        case .disconnected?: return "未连接 Wi-Fi"
+        case let .unresolved(router)?: return "正在识别路由器 \(router)"
+        case let .network(_, router)?: return atHome ? "家庭网络 · 路由器 \(router)" : "其他网络 · 路由器 \(router)"
         }
-        for (path, arguments) in [("/usr/sbin/networksetup", ["-getairportnetwork", "en0"]),
-                                   ("/usr/sbin/ipconfig", ["getsummary", "en0"])] {
-            let result = run(path, arguments)
-            if result.0 == 0, let ssid = WiFiSSIDParser.parseNetworksetup(result.1) {
-                ssidReadWithoutLocation = true
-                return ssid
-            }
-        }
-        ssidReadWithoutLocation = false
-        return nil
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Prevent multiple timers changing the same network service.
+        // Prevent multiple instances changing the same network service.
         if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier!).count > 1 {
             NSApp.terminate(nil); return
         }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Wi-Fi 固定 IP 与静音切换器")
-        location.delegate = self
         rebuildMenu()
-        checkSpeakers()
-        speakerTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.checkSpeakers() }
-        RunLoop.main.add(speakerTimer!, forMode: .common)
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.tick() }
-        timer?.tolerance = 1
+        // Network and audio changes arrive as notifications; nothing polls.
+        let monitor = NetworkChangeMonitor { [weak self] in self?.scheduleEvaluation(after: 1) }
+        let subscribed = monitor.start()
+        networkMonitor = monitor
+        speakerMonitor = SpeakerChangeMonitor { [weak self] in self?.enforceSpeakers() }
+        speakerMonitor?.start()
+        // Low-frequency safety net in case a notification is ever missed; a
+        // shorter interval only if the system refused the subscription.
+        safetyTimer = Timer.scheduledTimer(withTimeInterval: subscribed ? 300 : 30, repeats: true) { [weak self] _ in self?.evaluate() }
+        safetyTimer?.tolerance = 30
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.policy = NetworkPolicy(); self?.checkSpeakers(); self?.tick()
+            self?.policy = NetworkPolicy(); self?.speakerMonitor?.start(); self?.evaluate()
         }
-        tick()
+        evaluate()
         if !UserDefaults.standard.bool(forKey: "introduced") { showSetup() }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSetup(); return true }
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) { settingsUI?.update(self); tick() }
     var helperInstalled: Bool { FileManager.default.isExecutableFile(atPath: helperPath) }
-    var settingsValid: Bool { HomeSettings.validSSID(settings.ssid) && HomeSettings.validIP(settings.ip) }
+    var settingsValid: Bool { HomeSettings.validRouter(settings.router) && HomeSettings.validIP(settings.ip) }
     var helperConfigured: Bool {
         if let installedIP = try? String(contentsOfFile: helperConfigPath, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines) {
@@ -105,16 +102,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     }
     func rebuildMenu() {
         let loginEnabled = SMAppService.mainApp.status == .enabled
-        let state = [currentSSID, currentIP, status, speakerStatus, String(enabled),
-                     String(speakerProtection), String(busy), String(loginEnabled),
-                     String(location.authorizationStatus.rawValue)]
+        let state = [networkDescription, currentIP, status, speakerStatus, String(enabled),
+                     String(speakerProtection), String(busy), String(loginEnabled)]
         settingsUI?.update(self)
         guard state != displayedMenuState else { return }
         displayedMenuState = state
-        let diagnostic = "authorization=\(location.authorizationStatus.rawValue) enabled=\(enabled) ssidAvailable=\(detectedSSID != nil) ssidReader=\(ssidReadWithoutLocation ? "networksetup" : "corewlan-or-none") status=\(status) speakerProtection=\(speakerProtection) speakerStatus=\(speakerStatus)"
+        // No router address or network history is written to disk.
+        let known = observation?.mac != nil
+        let diagnostic = "enabled=\(enabled) networkKnown=\(known) atHome=\(atHome) status=\(status) speakerProtection=\(speakerProtection) speakerStatus=\(speakerStatus)"
         try? diagnostic.write(to: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Caches/cn.wangshan.home-ip-status.txt"), atomically: true, encoding: .utf8)
         let menu = NSMenu()
-        menu.addItem(menuItem("Wi-Fi：\(currentSSID)"))
+        menu.addItem(menuItem("网络：\(networkDescription)"))
         menu.addItem(menuItem("当前 IP：\(currentIP)"))
         menu.addItem(menuItem(status))
         menu.addItem(menuItem(speakerStatus))
@@ -136,76 +134,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         item.menu = menu
         item.button?.title = enabled ? "" : " 暂停"
     }
-    @objc func checkNow() { failureUntil = .distantPast; checkSpeakers(); tick() }
+    @objc func checkNow() { failureUntil = .distantPast; evaluate() }
     @objc func toggleSpeakerProtection() {
         speakerProtection.toggle()
         UserDefaults.standard.set(speakerProtection, forKey: "muteSpeakersAway")
-        checkSpeakers(); rebuildMenu()
+        evaluate()
     }
-    func checkSpeakers() {
+
+    /// Coalesces bursts of notifications; keeps the earliest pending deadline.
+    func scheduleEvaluation(after delay: TimeInterval) {
+        let deadline = Date().addingTimeInterval(max(0, delay))
+        if let timer = evaluationTimer, timer.isValid, timer.fireDate <= deadline { return }
+        evaluationTimer?.invalidate()
+        let timer = Timer(fire: deadline, interval: 0, repeats: false) { [weak self] _ in
+            self?.evaluationTimer = nil; self?.evaluate()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        evaluationTimer = timer
+    }
+
+    /// Reads the gateway and Wi-Fi configuration off the main thread, then
+    /// updates IP and speaker policy. Triggered by events, never by polling.
+    func evaluate() {
+        evaluationTimer?.invalidate(); evaluationTimer = nil
         guard settingsValid else {
-            if speakerStatus != "扬声器保护：请先设置家庭网络" {
-                speakerStatus = "扬声器保护：请先设置家庭网络"; rebuildMenu()
+            status = "请先绑定家庭网络并设置固定 IP"; enforceSpeakers(); rebuildMenu(); return
+        }
+        guard !evaluating, !busy else { evaluateAgain = true; return }
+        evaluating = true
+        queue.async {
+            let observed = WiFiGateway.observe()
+            let info = run("/usr/sbin/networksetup", ["-getinfo", "Wi-Fi"])
+            DispatchQueue.main.async { self.evaluating = false; self.handle(observed, info) }
+        }
+    }
+
+    private func handle(_ observed: GatewayObservation, _ info: (Int32, String)) {
+        guard settingsValid else { evaluate(); return }
+        observation = observed
+        config = info.1
+        currentIP = ipAddress(in: info.1)
+        let network = observed.mac
+        let desired = policy.observe(network: network, homeNetwork: settings.router, enabled: enabled)
+        _ = speakerPolicy.desiredMute(network: network, homeNetwork: settings.router, enabled: speakerProtection)
+        enforceSpeakers()
+        var next: TimeInterval?
+        // An unanswered router or unreadable configuration has no event to
+        // wait for, so retry with backoff (3 s doubling to 60 s).
+        if observed.router != nil && network == nil || info.0 != 0 {
+            next = min(3 * pow(2, Double(readRetries)), 60); readRetries += 1
+        } else { readRetries = 0 }
+        if info.0 != 0 { status = "读取 Wi-Fi 配置失败" }
+        else if !enabled { status = "自动切换已暂停" }
+        else if !helperInstalled || !helperConfigured { status = "请在设置中安装网络助手" }
+        else if network == nil { status = observed == .disconnected ? "未连接 Wi-Fi，保留当前设置" : "正在识别路由器，保留当前设置" }
+        else if Date() < failureUntil { next = failureUntil.timeIntervalSinceNow }
+        else if let desired, let network {
+            if matches(desired) { status = desired == .home ? "家庭模式 · DHCP 手动地址" : "外出模式 · 自动 DHCP" }
+            else { apply(desired, expecting: network); return }
+        } else { status = "正在确认网络，稍后自动切换…" }
+        if policy.awaitingConfirmation || speakerPolicy.awaitingConfirmation { next = min(next ?? confirmDelay, confirmDelay) }
+        rebuildMenu()
+        if let next { scheduleEvaluation(after: next) }
+        if evaluateAgain { evaluateAgain = false; scheduleEvaluation(after: 0.5) }
+    }
+
+    /// Applies the speaker desire for the latest observation. Called after each
+    /// network read and on CoreAudio change notifications.
+    func enforceSpeakers() {
+        guard settingsValid else {
+            if speakerStatus != "扬声器保护：请先绑定家庭网络" {
+                speakerStatus = "扬声器保护：请先绑定家庭网络"; rebuildMenu()
             }
             return
         }
-        let ssid = detectedSSID
-        let desired = speakerPolicy.desiredMute(ssid: ssid, homeSSID: settings.ssid, enabled: speakerProtection)
         let next: String
+        var retry = false
         if !speakerProtection { next = "扬声器保护：已关闭" }
-        else if let desired {
+        else if let desired = speakerPolicy.currentDesire {
             let result = SpeakerAudio.setInternalSpeakersMuted(desired)
             if !desired && result.success { speakerPolicy.didRestoreHome() }
+            // Missing speakers reappear through the device-list notification.
+            retry = !result.success && result.status != "扬声器保护：未识别到内置扬声器"
             next = result.status
         } else if speakerStatus == "扬声器保护：在家 · 已取消静音" || speakerStatus == "扬声器保护：在家 · 音量由你控制" {
             next = "扬声器保护：在家 · 音量由你控制"
-        } else { next = "扬声器保护：正在确认家庭 Wi-Fi…" }
+        } else { next = "扬声器保护：正在确认家庭网络…" }
+        speakerRetryTimer?.invalidate(); speakerRetryTimer = nil
+        if retry {
+            speakerRetryTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.enforceSpeakers() }
+        }
         if speakerStatus != next { speakerStatus = next; rebuildMenu() }
     }
-    func tick() {
-        guard !busy else { return }
-        guard settingsValid else {
-            status = "请先设置家庭 Wi-Fi 和固定 IP"; rebuildMenu(); return
-        }
-        let ssid = readCurrentSSID()
-        detectedSSID = ssid
-        currentSSID = ssid ?? "未连接或尚未允许识别"
-        let desired = policy.observe(ssid: ssid, homeSSID: settings.ssid, enabled: enabled)
-        busy = true
-        queue.async {
-            let result = run("/usr/sbin/networksetup", ["-getinfo", "Wi-Fi"])
-            DispatchQueue.main.async {
-                self.busy = false; self.config = result.1
-                self.currentIP = result.1.components(separatedBy: "\n").first(where: { $0.hasPrefix("IP address: ") })?.replacingOccurrences(of: "IP address: ", with: "") ?? "—"
-                guard result.0 == 0 else { self.status = "读取 Wi-Fi 配置失败"; self.rebuildMenu(); return }
-                if !self.enabled { self.status = "自动切换已暂停" }
-                else if !self.helperInstalled || !self.helperConfigured { self.status = "请在设置中安装网络助手" }
-                else if ssid == nil { self.status = "无法识别 Wi-Fi，保留当前设置" }
-                else if Date() < self.failureUntil { /* preserve error during backoff */ }
-                else if let desired {
-                    if self.matches(desired) { self.status = desired == .home ? "家庭模式 · DHCP 手动地址" : "外出模式 · 自动 DHCP" }
-                    else if self.readCurrentSSID() == ssid { self.apply(desired); return }
-                    else { self.policy = NetworkPolicy(); self.status = "Wi-Fi 已变化，等待重新确认" }
-                } else { self.status = "正在确认 Wi-Fi，稍后自动切换…" }
-                self.checkSpeakers()
-                self.rebuildMenu()
-            }
-        }
+    func ipAddress(in info: String) -> String {
+        info.components(separatedBy: "\n").first(where: { $0.hasPrefix("IP address: ") })?.replacingOccurrences(of: "IP address: ", with: "") ?? "—"
     }
     func matches(_ mode: IPMode) -> Bool {
         if mode == .dhcp { return config.hasPrefix("DHCP Configuration") }
         return config.hasPrefix("Manually Using DHCP Router Configuration") && currentIP == settings.ip
     }
-    func apply(_ mode: IPMode, completion: ((Bool) -> Void)? = nil) {
+    /// `expecting` is the network the automatic decision was made for; the
+    /// gateway is re-read right before switching and the switch is skipped if
+    /// it changed. Manual actions pass nil.
+    func apply(_ mode: IPMode, expecting network: String? = nil, completion: ((Bool) -> Void)? = nil) {
         guard !busy else { completion?(false); return }
         guard helperInstalled, mode == .dhcp || helperConfigured else { status = "请先在设置中安装网络助手"; rebuildMenu(); completion?(false); return }
         busy = true; status = "正在切换网络配置…"; rebuildMenu()
         queue.async {
+            if let network, WiFiGateway.observe().mac != network {
+                DispatchQueue.main.async {
+                    self.busy = false; self.policy = NetworkPolicy()
+                    self.status = "网络已变化，等待重新确认"; self.rebuildMenu()
+                    self.scheduleEvaluation(after: self.confirmDelay); completion?(false)
+                }
+                return
+            }
             let result = run("/usr/bin/sudo", ["-n", helperPath, mode.rawValue])
             let verify = run("/usr/sbin/networksetup", ["-getinfo", "Wi-Fi"])
             DispatchQueue.main.async {
                 self.busy = false; self.config = verify.1
-                self.currentIP = verify.1.components(separatedBy: "\n").first(where: { $0.hasPrefix("IP address: ") })?.replacingOccurrences(of: "IP address: ", with: "") ?? "—"
+                self.currentIP = self.ipAddress(in: verify.1)
                 let success = result.0 == 0 && verify.0 == 0 && self.matches(mode)
                 if success { self.status = mode == .home ? "家庭模式 · \(self.settings.ip)" : "已恢复自动 DHCP" }
                 else {
@@ -214,6 +262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
                     if completion != nil { self.alert(self.status, result.1.isEmpty ? "配置未达到预期，当前设置未被标记为成功。" : result.1) }
                 }
                 self.rebuildMenu(); completion?(success)
+                if !success { self.scheduleEvaluation(after: 60) }
+                if self.evaluateAgain { self.evaluateAgain = false; self.scheduleEvaluation(after: 0.5) }
             }
         }
     }
@@ -222,9 +272,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
     }
     @objc func toggleAutomatic() {
         if enabled { restore(); return }
-        guard settingsValid else { showSetup(); alert("请先完成设置", "填写家庭 Wi-Fi 和固定 IP 后再开启自动切换。"); return }
+        guard settingsValid else { showSetup(); alert("请先完成设置", "绑定家庭网络并填写固定 IP 后再开启自动切换。"); return }
         guard helperInstalled else { showSetup(); settingsUI?.selectPage(2); return }
-        setEnabled(true); tick()
+        setEnabled(true); evaluate()
     }
     @objc func restore() {
         guard !busy else { alert("正在处理网络", "请稍后再试。"); return }
@@ -246,30 +296,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert(); alert.messageText = title; alert.informativeText = detail; alert.runModal()
     }
-    @objc func authorizeLocation() {
-        // Retry the system network reader first. Location permission remains a
-        // compatibility fallback for older/macOS configurations only.
-        let ssid = readCurrentSSID()
-        detectedSSID = ssid
-        currentSSID = ssid ?? "未连接或尚未允许识别"
-        if ssid != nil {
-            checkSpeakers(); tick(); return
-        }
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.location.requestWhenInUseAuthorization()
-        }
-    }
     @objc func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
-    @objc func openPrivacy() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices")!) }
-    @objc func useCurrentWiFi() {
-        guard let ssid = readCurrentSSID(),
-              HomeSettings.validSSID(ssid) else {
-            alert("暂时无法识别当前 Wi-Fi", "请确认已连接 Wi-Fi。应用会优先通过系统网络信息读取名称；如果仍不可用，再在 macOS 定位服务中允许本应用读取网络名称。")
-            return
+    /// Fills the router field with the current Wi-Fi gateway's MAC address.
+    @objc func useCurrentNetwork() {
+        queue.async {
+            let observed = WiFiGateway.observe()
+            DispatchQueue.main.async {
+                self.observation = observed
+                guard let mac = observed.mac else {
+                    self.alert("暂时无法识别当前网络", observed == .disconnected
+                        ? "请先连接家庭 Wi-Fi，再点击「使用当前网络」。"
+                        : "已连接 Wi-Fi，但路由器 \(observed.router ?? "") 暂未响应。请稍后重试。")
+                    self.rebuildMenu(); return
+                }
+                self.routerField?.stringValue = mac
+                self.rebuildMenu()
+            }
         }
-        ssidField?.stringValue = ssid
     }
     func authorizeHelper(_ command: String) -> String? {
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\")
@@ -280,12 +323,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         return error.flatMap { ($0[NSAppleScript.errorMessage] as? String) ?? "管理员授权未完成。" }
     }
     @objc func saveSettings() {
-        guard let ssidField, let ipField else { return }
-        let candidate = HomeSettings(ssid: ssidField.stringValue, ip: ipField.stringValue)
-        guard HomeSettings.validSSID(candidate.ssid) else {
-            settingsUI?.showFeedback("请输入实际的 Wi-Fi 名称，最长 32 字节，不能包含控制字符。", error: true)
+        guard let routerField, let ipField else { return }
+        guard let router = GatewayParser.normalizeMAC(routerField.stringValue) else {
+            settingsUI?.showFeedback("请在家中点击「使用当前网络」，或输入路由器硬件地址，例如 a4:91:b1:0c:22:7e。", error: true)
             return
         }
+        routerField.stringValue = router
+        let candidate = HomeSettings(router: router, ip: ipField.stringValue)
         guard HomeSettings.validIP(candidate.ip) else {
             settingsUI?.showFeedback("请输入可用的 IPv4 地址，例如 192.168.50.42。", error: true)
             return
@@ -306,21 +350,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
             }
         }
         settings = candidate
-        UserDefaults.standard.set(candidate.ssid, forKey: "homeSSID")
+        UserDefaults.standard.set(candidate.router, forKey: "homeRouter")
         UserDefaults.standard.set(candidate.ip, forKey: "homeIP")
         policy = NetworkPolicy()
         speakerPolicy = SpeakerTransitionPolicy()
         failureUntil = .distantPast
-        checkSpeakers(); tick()
+        evaluate()
         settingsUI?.showFeedback("家庭网络已保存。")
     }
     @objc func installHelper() {
         guard !busy, let resources = Bundle.main.resourcePath else { return }
-        guard settingsValid else { alert("请先完成设置", "填写并保存家庭 Wi-Fi 和固定 IP 后再安装网络助手。"); return }
+        guard settingsValid else { alert("请先完成设置", "绑定并保存家庭网络和固定 IP 后再安装网络助手。"); return }
         let command = "/bin/bash " + shellQuote(resources + "/install-helper.sh") + " " + shellQuote(NSUserName()) + " " + shellQuote(settings.ip)
         // Installation is user-initiated; macOS owns the administrator password prompt.
         if let error = authorizeHelper(command) { alert("安装未完成", error) }
-        else { alert("网络助手已安装", "接下来允许识别 Wi-Fi，然后在菜单栏勾选自动切换和登录时启动。"); tick() }
+        else { alert("网络助手已安装", "接下来在菜单栏勾选自动切换和登录时启动。"); evaluate() }
     }
     @objc func showSetup() {
         UserDefaults.standard.set(true, forKey: "introduced")
@@ -333,7 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
         let ui = SettingsUI(app: self)
         window.contentView = ui
         settingsUI = ui
-        ssidField = ui.ssidField
+        routerField = ui.routerField
         ipField = ui.ipField
         self.window = window
         window.center()
@@ -343,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CLLocationManagerDeleg
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow, closing === window else { return }
-        ssidField = nil
+        routerField = nil
         ipField = nil
         window = nil
         settingsUI = nil

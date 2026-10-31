@@ -10,7 +10,7 @@ enum SpeakerAudio {
         return value
     }
 
-    static func internalSpeakers() -> [AudioDeviceID]? {
+    static func devices() -> [AudioDeviceID]? {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         let system = AudioObjectID(kAudioObjectSystemObject)
@@ -22,7 +22,11 @@ enum SpeakerAudio {
             AudioObjectGetPropertyData(system, &address, 0, nil, &size, $0.baseAddress!)
         }
         guard result == noErr else { return nil }
-        return devices.prefix(Int(size) / MemoryLayout<AudioDeviceID>.size).filter {
+        return Array(devices.prefix(Int(size) / MemoryLayout<AudioDeviceID>.size))
+    }
+
+    static func internalSpeakers() -> [AudioDeviceID]? {
+        devices()?.filter {
             SpeakerPolicy.isInternalSpeaker(transport: read($0, kAudioDevicePropertyTransportType),
                 source: read($0, kAudioDevicePropertyDataSource, scope: kAudioDevicePropertyScopeOutput))
         }
@@ -48,5 +52,49 @@ enum SpeakerAudio {
             }
         }
         return (true, muted ? "扬声器保护：未确认在家 · 已静音" : "扬声器保护：在家 · 已取消静音")
+    }
+}
+
+/// Replaces per-second speaker polling: CoreAudio notifies when devices are
+/// added/removed, or when a built-in device's mute or data source changes
+/// (e.g. the user unmutes while away). Callbacks arrive on main.
+final class SpeakerChangeMonitor {
+    private typealias Registration = (AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)
+    private var registrations: [Registration] = []
+    private let onChange: () -> Void
+
+    init(onChange: @escaping () -> Void) { self.onChange = onChange }
+    deinit { stop() }
+
+    func start() {
+        stop()
+        listen(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal) { [weak self] in
+            // Devices changed: watch the new set, then re-check once.
+            self?.start(); self?.onChange()
+        }
+        // Built-in devices only; their data source switches between speakers
+        // and headphones on some Macs, so watch it as well as mute.
+        for device in SpeakerAudio.devices() ?? [] where SpeakerAudio.read(device, kAudioDevicePropertyTransportType) == 0x626C746E {
+            for selector in [kAudioDevicePropertyMute, kAudioDevicePropertyDataSource] {
+                listen(device, selector, kAudioDevicePropertyScopeOutput) { [weak self] in self?.onChange() }
+            }
+        }
+    }
+
+    func stop() {
+        for (object, address, block) in registrations {
+            var address = address
+            AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+        }
+        registrations = []
+    }
+
+    private func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+                        _ scope: AudioObjectPropertyScope, _ action: @escaping () -> Void) {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { _, _ in action() }
+        guard AudioObjectHasProperty(object, &address),
+              AudioObjectAddPropertyListenerBlock(object, &address, .main, block) == noErr else { return }
+        registrations.append((object, address, block))
     }
 }

@@ -1,5 +1,4 @@
 import AppKit
-import CoreLocation
 import ServiceManagement
 
 private enum UIStyle {
@@ -70,7 +69,7 @@ final class SettingsUI: NSView {
     private weak var app: AppDelegate?
     private var pages: [NSView] = []
     private var navigation: [SidebarButton] = []
-    let ssidField = NSTextField(string: "")
+    let routerField = NSTextField(string: "")
     let ipField = NSTextField(string: "")
     private let modeTitle = NSTextField(labelWithString: "")
     private let modeDetail = NSTextField(wrappingLabelWithString: "")
@@ -83,14 +82,14 @@ final class SettingsUI: NSView {
     private let speaker = NSTextField(labelWithString: "")
     private let speakerDetail = NSTextField(wrappingLabelWithString: "")
     private let feedback = NSTextField(wrappingLabelWithString: "")
-    private let locationState = NSTextField(labelWithString: "")
+    private let networkState = NSTextField(labelWithString: "")
     private let helperState = NSTextField(labelWithString: "")
     private let loginState = NSTextField(labelWithString: "")
     private let automatic = NSSwitch()
     private let protection = NSSwitch()
     private let login = NSSwitch()
     private var operationButtons: [NSButton] = []
-    private var locationButton: NSButton!
+    private var checkButton: NSButton!
     private var helperButton: NSButton!
 
     init(app: AppDelegate) {
@@ -106,7 +105,7 @@ final class SettingsUI: NSView {
         buildOverview(pages[0], app)
         buildNetwork(pages[1], app)
         buildPermissions(pages[2], app)
-        ssidField.stringValue = app.settings.ssid
+        routerField.stringValue = app.settings.router
         ipField.stringValue = app.settings.ip
         selectPage(app.settingsValid ? 0 : 1)
         update(app)
@@ -203,7 +202,7 @@ final class SettingsUI: NSView {
         dynamic(modeTitle, in: hero, NSRect(x: 104, y: 24, width: 380, height: 31), size: 22, weight: .semibold)
         dynamic(modeDetail, in: hero, NSRect(x: 104, y: 64, width: 488, height: 38), size: 12, color: UIStyle.muted)
         dynamic(modeBadge, in: page, NSRect(x: 36, y: 245, width: 600, height: 21), size: 11, color: UIStyle.accent)
-        let fields = [(networkName, networkHint, "当前 Wi-Fi"), (address, addressHint, "IPv4 地址"), (speaker, nil, "内置扬声器")]
+        let fields = [(networkName, networkHint, "当前网络"), (address, addressHint, "IPv4 地址"), (speaker, nil, "内置扬声器")]
         for (i, entry) in fields.enumerated() {
             let x = CGFloat(36 + i * 210)
             text(entry.2, in: page, NSRect(x: x, y: 280, width: 190, height: 18), size: 11, color: UIStyle.muted)
@@ -221,15 +220,15 @@ final class SettingsUI: NSView {
         operationButtons.append(button("恢复 DHCP 并暂停自动切换", in: page, NSRect(x: 30, y: 601, width: 224, height: 30), target: app, action: #selector(AppDelegate.restore)))
     }
     private func buildNetwork(_ page: NSView, _ app: AppDelegate) {
-        heading("家庭网络", subtitle: "告诉应用，哪一个 Wi-Fi 是你的家。", in: page)
+        heading("家庭网络", subtitle: "在家连接 Wi-Fi 时绑定一次，应用就能认出你的家。", in: page)
         let group = Surface(NSRect(x: 36, y: 117, width: 618, height: 279), color: .white, radius: 10, border: true)
         page.addSubview(group)
-        text("家庭 Wi-Fi 名称", in: group, NSRect(x: 20, y: 21, width: 570, height: 22), weight: .medium)
-        ssidField.frame = NSRect(x: 20, y: 57, width: 411, height: 32)
-        ssidField.placeholderString = "例如：我的家"; ssidField.setAccessibilityLabel("家庭 Wi-Fi 名称")
-        group.addSubview(ssidField)
-        button("使用当前 Wi-Fi", in: group, NSRect(x: 444, y: 55, width: 154, height: 36), target: app, action: #selector(AppDelegate.useCurrentWiFi))
-        text("按网络名称精确匹配，保留大小写和空格。", in: group, NSRect(x: 20, y: 103, width: 578, height: 23), size: 11, color: UIStyle.muted)
+        text("家庭路由器", in: group, NSRect(x: 20, y: 21, width: 570, height: 22), weight: .medium)
+        routerField.frame = NSRect(x: 20, y: 57, width: 411, height: 32)
+        routerField.placeholderString = "在家点击右侧按钮自动填入"; routerField.setAccessibilityLabel("家庭路由器硬件地址")
+        group.addSubview(routerField)
+        button("使用当前网络", in: group, NSRect(x: 444, y: 55, width: 154, height: 36), target: app, action: #selector(AppDelegate.useCurrentNetwork))
+        text("按 Wi-Fi 网关的硬件地址识别，无需定位权限。更换路由器后需重新绑定。", in: group, NSRect(x: 20, y: 103, width: 578, height: 23), size: 11, color: UIStyle.muted)
         divider(in: group, y: 139)
         text("家庭固定 IPv4 地址", in: group, NSRect(x: 20, y: 160, width: 570, height: 22), weight: .medium)
         ipField.frame = NSRect(x: 20, y: 196, width: 578, height: 32)
@@ -247,24 +246,24 @@ final class SettingsUI: NSView {
         heading("权限与启动", subtitle: "完成一次设置，之后在菜单栏自动工作。", in: page)
         let group = Surface(NSRect(x: 36, y: 117, width: 618, height: 309), color: .white, radius: 10, border: true)
         page.addSubview(group)
-        for (index, entry) in [("wifi", "识别 Wi-Fi 名称", "优先使用系统网络信息；定位服务关闭时也可尝试读取当前网络名。"), ("checkmark.shield", "网络助手", "经管理员授权后，才能切换固定 IP 与 DHCP。")].enumerated() {
+        for (index, entry) in [("wifi", "识别家庭网络", "通过 Wi-Fi 网关的硬件地址判断，无需定位权限；网络变化时自动检查。"), ("checkmark.shield", "网络助手", "经管理员授权后，才能切换固定 IP 与 DHCP。")].enumerated() {
             let y = CGFloat(index * 106)
             _ = symbol(entry.0, in: group, NSRect(x: 20, y: y + 28, width: 32, height: 32))
             text(entry.1, in: group, NSRect(x: 68, y: y + 17, width: 378, height: 23), weight: .medium)
             text(entry.2, in: group, NSRect(x: 68, y: y + 44, width: 388, height: 22), size: 11, color: UIStyle.muted)
             divider(in: group, y: y + 105)
         }
-        dynamic(locationState, in: group, NSRect(x: 68, y: 73, width: 450, height: 19), size: 11, color: UIStyle.accent)
+        dynamic(networkState, in: group, NSRect(x: 68, y: 73, width: 450, height: 19), size: 11, color: UIStyle.accent)
         dynamic(helperState, in: group, NSRect(x: 68, y: 179, width: 450, height: 19), size: 11, color: UIStyle.accent)
-        locationButton = button("允许识别", in: group, NSRect(x: 491, y: 26, width: 108, height: 32), target: app, action: #selector(AppDelegate.authorizeLocation))
+        checkButton = button("立即检查", in: group, NSRect(x: 491, y: 26, width: 108, height: 32), target: app, action: #selector(AppDelegate.checkNow))
+        operationButtons.append(checkButton)
         helperButton = button("安装助手", in: group, NSRect(x: 491, y: 132, width: 108, height: 32), target: app, action: #selector(AppDelegate.installHelper))
         operationButtons.append(helperButton)
         toggleRow(in: group, y: 212, title: "登录时启动", detail: "登录 Mac 后，自动在菜单栏运行。", control: login, app: app, action: #selector(AppDelegate.toggleLogin))
         dynamic(loginState, in: page, NSRect(x: 36, y: 442, width: 618, height: 23), size: 11, color: UIStyle.muted)
-        button("系统定位权限", in: page, NSRect(x: 29, y: 475, width: 140, height: 32), target: app, action: #selector(AppDelegate.openPrivacy))
-        button("系统登录项设置", in: page, NSRect(x: 174, y: 475, width: 150, height: 32), target: app, action: #selector(AppDelegate.openLoginSettings))
+        button("系统登录项设置", in: page, NSRect(x: 29, y: 475, width: 150, height: 32), target: app, action: #selector(AppDelegate.openLoginSettings))
         text("你的隐私", in: page, NSRect(x: 36, y: 544, width: 600, height: 24), weight: .medium)
-        text("不采集或保存位置坐标，不保存管理员密码。\n仅管理 Wi-Fi 的 IPv4 配置与内置扬声器静音状态。", in: page, NSRect(x: 36, y: 579, width: 618, height: 55), size: 12, color: UIStyle.muted)
+        text("不使用定位，不保存 Wi-Fi 名称历史或管理员密码。\n仅管理 Wi-Fi 的 IPv4 配置与内置扬声器静音状态。", in: page, NSRect(x: 36, y: 579, width: 618, height: 55), size: 12, color: UIStyle.muted)
     }
     func showFeedback(_ value: String, error: Bool = false) {
         feedback.stringValue = value
@@ -272,16 +271,21 @@ final class SettingsUI: NSView {
         selectPage(1)
     }
     func update(_ app: AppDelegate) {
-        let ssid = app.currentSSID
-        let unknown = ssid == "未知" || ssid == "未连接或尚未允许识别"
-        let home = app.settingsValid && !unknown && ssid == app.settings.ssid
+        let unknown = app.observation?.mac == nil
+        let home = app.atHome
         modeTitle.stringValue = !app.settingsValid ? "先设置你的家庭网络" : unknown ? "暂时无法识别当前网络" : home ? "已连接家庭网络" : "已连接外出网络"
         modeDetail.stringValue = app.status
         modeIcon.image = NSImage(systemSymbolName: home ? "house" : unknown ? "wifi.slash" : "checkmark.shield", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 30, weight: .regular))
         modeBadge.stringValue = app.enabled ? "IP 自动切换已开启" : "IP 自动切换已暂停"
-        networkName.stringValue = unknown ? "未识别" : ssid
-        networkHint.stringValue = unknown ? "断网或尚未允许识别" : home ? "与家庭网络名称一致" : "非家庭网络"
+        networkName.stringValue = unknown ? "未识别" : home ? "家庭网络" : "其他网络"
+        networkHint.stringValue = app.observation.map { observed -> String in
+            switch observed {
+            case .disconnected: return "未连接 Wi-Fi"
+            case let .unresolved(router): return "路由器 \(router) 未响应"
+            case let .network(_, router): return home ? "家庭路由器 \(router)" : "路由器 \(router)"
+            }
+        } ?? "正在读取…"
         address.stringValue = app.currentIP
         addressHint.stringValue = app.config.hasPrefix("DHCP Configuration") ? "自动 DHCP" : app.config.hasPrefix("Manually Using DHCP Router Configuration") ? "DHCP 手动地址" : "等待确认网络配置"
         speakerDetail.stringValue = app.speakerStatus
@@ -293,10 +297,7 @@ final class SettingsUI: NSView {
         protection.state = app.speakerProtection ? .on : .off
         automatic.isEnabled = !app.busy
         for button in operationButtons { button.isEnabled = !app.busy }
-        let authorized = app.location.authorizationStatus == .authorizedAlways
-        locationState.stringValue = app.ssidReadWithoutLocation ? "已通过系统网络信息识别（无需定位权限）" : authorized ? "已允许识别网络名称" : !CLLocationManager.locationServicesEnabled() ? "定位服务已关闭，将优先使用系统网络信息" : app.location.authorizationStatus == .denied || app.location.authorizationStatus == .restricted ? "未允许，将优先使用系统网络信息" : "尚未授权，将优先使用系统网络信息"
-        locationButton.title = (app.detectedSSID != nil || authorized) ? "已识别" : "检查识别"
-        locationButton.isEnabled = app.detectedSSID == nil && !app.busy
+        networkState.stringValue = !HomeSettings.validRouter(app.settings.router) ? "尚未绑定家庭网络，请在「家庭网络」页面绑定" : unknown ? "已绑定 · 当前未识别到网络" : home ? "已绑定 · 当前在家" : "已绑定 · 当前不在家"
         let configured = app.helperInstalled && app.helperConfigured
         helperState.stringValue = configured ? "已安装，家庭地址已同步" : app.helperInstalled ? "家庭地址待同步，请重新安装助手" : "尚未安装网络助手"
         helperButton.title = configured ? "已安装" : "安装助手"
